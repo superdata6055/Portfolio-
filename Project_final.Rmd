@@ -1,0 +1,407 @@
+---
+title: "Profit est"
+output: pdf_document
+date: "2025-03-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(fpp3)
+library(ggplot2)
+library(leaps)
+library(ISLR)
+library(glmnet)
+library(boot)
+```
+
+
+```{r}
+#make sure to set the working directory to the right place
+dat <- read.csv("restaurant_data.csv")
+dat
+```
+
+```{r}
+#Creating dummies for categorical variables
+Location <- as.factor(dat$Location)
+tmp_loc <- data.frame(model.matrix(~Location-1))
+
+Cuisine <- as.factor(dat$Cuisine)
+tmp_cui <- data.frame(model.matrix(~Cuisine-1))
+
+Parking.Availability <- as.factor(dat$Parking.Availability)
+tmp_park <- data.frame(model.matrix(~Parking.Availability-1))
+
+#Combining clean data
+dat1 <- cbind(dat[,17], tmp_loc[,1:2], tmp_cui[,1:5], dat[,4:13], tmp_park[,2]
+              , dat[, 15:16])
+names(dat1)[1] <- "Revenue"
+names(dat1)[19] <- "Parking.Availability.Yes"
+dat1
+```
+
+```{r}
+#
+median_meal <- median(dat1$Average.Meal.Price) #casual vs fine dining assumption <- fine dining is higher
+dat1$est.profit <- ifelse(dat1$Average.Meal.Price > median_meal, (0.08 * dat1$Revenue), (0.06*dat1$Revenue))
+dat1
+
+dat_clean <- cbind(dat1[,22], dat1[,2:21])
+names(dat_clean)[1] <- "Est.Profit"
+dat_clean
+```
+
+```{r}
+corr <- cor(dat_clean)
+corr
+```
+
+```{r}
+#linear all in
+
+linear1 <- lm(Est.Profit ~., data = dat_clean)
+summary(linear1)
+```
+
+```{r}
+linear2 <- lm(Est.Profit~.- Average.Meal.Price - Seating.Capacity, data = dat_clean)
+summary(linear2)
+```
+###taking out Average.Meal.Price and Seating.Capacity decreases the r-squared
+###significantly --> it is over-powering the data. Decided to keep in analysis
+
+
+
+```{r}
+#Creating training and test data
+set.seed(11527784)
+train <- sample(1:nrow(dat_clean), nrow(dat_clean)*0.7) 
+dat.tr <- dat_clean[train,]
+dat.tst <- dat_clean[-train,]
+```
+
+```{r}
+#All in model
+linear.all <- lm(Est.Profit ~., data = dat.tr)
+summary(linear.all)
+```
+
+
+```{r}
+#"best" model
+linear.best <- lm(Est.Profit~.-Marketing.Budget - Social.Media.Followers 
+                  - Number.of.Reviews - Avg.Review.Length -Ambience.Score 
+                  - Service.Quality.Score - Parking.Availability.Yes 
+                  - Weekend.Reservations - Weekday.Reservations 
+                  - LocationDowntown - LocationRural - Rating, data = dat.tr)
+summary(linear.best)
+
+```
+```{r}
+anova(linear.best, linear.all)
+```
+###Statistically, the best and the all-in model are the same from ANOVA test
+
+
+```{r}
+#Training RMSE
+RMSE.all <- summary(linear.all)$sigma
+RMSE.best <- summary(linear.best)$sigma
+
+#Test RMSE
+linear.all.tst <- lm(Est.Profit ~., data= dat.tst)
+RMSE.all.tst <- summary(linear.all.tst)$sigma
+
+linear.best.tst <- lm(Est.Profit~.-Marketing.Budget - Social.Media.Followers - Number.of.Reviews - Avg.Review.Length -Ambience.Score - Service.Quality.Score - Parking.Availability.Yes - Weekend.Reservations - Weekday.Reservations - LocationDowntown - LocationRural - Rating, data = dat.tst)
+RMSE.best.tst <- summary(linear.best.tst)$sigma
+```
+
+
+```{r}
+coef_df <- as.data.frame(summary(linear.best)$coefficients) 
+coef_df$Variable <- rownames(coef_df) 
+coef_df <- coef_df %>% filter(Variable != "(Intercept)")  # Remove intercept 
+coef_df$Abs_Coefficient <- abs(coef_df$Estimate)  # Get absolute values of coefficients 
+# Plot feature importance 
+ggplot(coef_df, aes(x = reorder(Variable, Abs_Coefficient), y =Abs_Coefficient)) + geom_bar(stat = "identity", fill = "steelblue") + coord_flip() + labs(title = "Feature Importance from Linear Regression", x = "Feature", y = "Absolute Coefficient Value") + theme_minimal()
+```
+
+
+
+
+
+
+
+
+```{r}
+#LOOCV method
+glm.1 <- glm(Est.Profit ~ ., data = dat_clean)
+RMSE.glm.1 <- ((sum(glm.1$residuals^2)/glm.1$df.residual))^0.5
+cv.err <- cv.glm(dat_clean, glm.1)
+MSE.LOOCV <- cv.err$delta[2]
+RMSE.LOOCV <- MSE.LOOCV^0.5
+RMSE.LOOCV
+```
+
+```{r}
+#5 Fold
+cv.err.5 <- cv.glm(dat_clean, glm.1, K = 5)
+MSE.5 <- cv.err.5$delta[2]
+RMSE.5 <- MSE.5^0.5
+RMSE.5
+```
+
+```{r}
+cv.err.10 <- cv.glm(dat_clean, glm.1, K = 10)
+MSE.10 <- cv.err.10$delta[2]
+RMSE.10 <- MSE.10^0.5
+RMSE.10
+```
+
+```{r}
+#Subsets
+regfit.full <- regsubsets(Est.Profit ~ ., dat.tr, nvmax = 10, really.big=T)
+reg.summary_subset <- summary(regfit.full)
+plot(summary(regfit.full)$rsq)
+
+par(mfrow=c(2,2))
+plot(reg.summary_subset$rsq, xlab = "Number of Variables", ylab ="R-squared")
+plot(reg.summary_subset$adjr2, xlab = "Number of Variables", 
+     ylab ="Adj R-squared")
+which.max(reg.summary_subset$adjr2)
+maxar2 <- which.max(reg.summary_subset$adjr2)
+points(maxar2,reg.summary_subset$adjr2[maxar2], col = "red", cex = 2, pch = 20)
+plot(reg.summary_subset$cp, xlab = "Number of Variables", ylab ="Mallows Cp")
+which.min(reg.summary_subset$cp)
+mincp <- which.min(reg.summary_subset$cp)
+points(mincp,reg.summary_subset$cp[mincp], col = "blue", cex = 2, pch = 20)
+plot(reg.summary_subset$bic, xlab = "Number of Variables", 
+     ylab ="Bayesian Info Crit")
+which.min(reg.summary_subset$bic)
+minbic <- which.min(reg.summary_subset$bic)
+points(minbic,reg.summary_subset$bic[minbic], col = "green", cex = 2, pch = 20)
+par(mfrow=c(1,1))
+
+#RMSE for subset
+dat.tst.mat <- model.matrix(Est.Profit~.,data = dat.tst)
+coef10 <- coef(regfit.full,10)
+yhat10 <- dat.tst.mat[,names(coef10)] %*% coef10
+MSE.bs10 <- mean((dat.tst$Est.Profit - yhat10)^2)
+RMSE.bs10 <- MSE.bs10^0.5
+RMSE.bs10
+```
+
+
+```{r}
+#Stepwise
+
+#Forwards
+regfit.fwd <- regsubsets(Est.Profit~., data = dat.tr, nvmax = 10, really.big = T, 
+                         method = "forward")
+summary(regfit.fwd)
+
+#Backwards
+regfit.bwd <- regsubsets(Est.Profit~., data = dat.tr, nvmax = 10, really.big = T, 
+                         method = "backward")
+summary(regfit.bwd)
+
+#Compare TEST RMSEs
+coef10.fwd <- coef(regfit.fwd,10) 
+yhat10.fwd <- dat.tst.mat[,names(coef10.fwd)] %*% coef10.fwd
+MSE.bs10.fwd <- mean((dat.tst$Est.Profit - yhat10.fwd)^2)
+RMSE.bs10.fwd <- MSE.bs10.fwd^0.5
+RMSE.bs10.fwd
+
+coef10.bwd <- coef(regfit.bwd,10) 
+yhat10.bwd <- dat.tst.mat[,names(coef10.bwd)] %*% coef10.bwd
+MSE.bs10.bwd <- mean((dat.tst$Est.Profit - yhat10.bwd)^2)
+RMSE.bs10.bwd <- MSE.bs10.bwd^0.5
+RMSE.bs10.bwd
+```
+
+```{r}
+#Ridge
+
+y <- dat_clean$Est.Profit
+X <- model.matrix(Est.Profit~., dat_clean)[,-1] #removing the intercept 
+dim(X)
+
+set.seed(11527784)
+train <- sample(1:nrow(X), nrow(X)/2)
+X.train <- X[train,]
+y.train <- y[train]
+X.test <- X[-train,]
+y.test <- y[-train]
+
+cv.out <- cv.glmnet(X.train, y.train, alpha = 0)
+plot(cv.out)
+bestlam = cv.out$lambda.min
+bestlam #report lambda
+
+ridge.mod <- glmnet(X.train, y.train, alpha = 0,
+                    lambda = bestlam)
+ridge.mod
+coef(ridge.mod)
+
+# Then compute the RSS, MSE, RMSE on the test data
+newX <- cbind(1,X.test)
+yhat.tst <- newX %*% coef(ridge.mod)[,1]
+RSS.R.tst <- sum((y.test - yhat.tst)^2)
+MSE.R.tst <- RSS.R.tst/nrow(X.test)
+RMSE.R.tst <- MSE.R.tst^0.5
+RMSE.R.tst
+```
+
+```{r}
+#Lasso
+
+cv.out.lasso <- cv.glmnet(X.train, y.train, alpha = 1)
+plot(cv.out.lasso)
+bestlam.lasso = cv.out.lasso$lambda.min
+bestlam.lasso #report lambda
+
+lasso.mod <- glmnet(X.train, y.train, alpha = 1,
+                    lambda = bestlam.lasso)
+lasso.mod
+coef(lasso.mod)
+
+# Then compute the RSS, MSE, RMSE on the test data
+newX.lasso <- cbind(1,X.test)
+yhat.tst.lasso <- newX.lasso %*% coef(lasso.mod)[,1]
+RSS.L.tst <- sum((y.test - yhat.tst.lasso)^2)
+MSE.L.tst <- RSS.L.tst/nrow(X.test)
+RMSE.L.tst <- MSE.L.tst^0.5
+RMSE.L.tst
+```
+
+```{r}
+#Comparing RMSEs of all the linear models
+
+#All in model
+RMSE.all #training
+RMSE.all.tst #testing
+
+#"Best" model
+RMSE.best #training
+RMSE.best.tst #testing
+
+#LOOCV
+RMSE.LOOCV
+
+#5 Fold
+RMSE.5
+
+#10 Fold
+RMSE.10
+
+#Subsets
+RMSE.bs10
+
+#Stepwise
+RMSE.bs10.fwd
+RMSE.bs10.bwd
+
+#Ridge
+RMSE.R.tst
+
+#Lasso
+RMSE.L.tst
+```
+####Best model: "All-in" test model, RMSE: 5706.274
+####Second: "best" model test, RMSE: 5706.917
+####Third: LOOCV, Forwards and Backwards setpwise, RMSE: 5710.108
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+#random forest
+library(randomForest)
+
+rf<- randomForest(Est.Profit ~., data = dat_clean)
+print(rf)
+importance(rf)
+varImpPlot(rf)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+dat_class <- dat_clean
+
+dat_class$Profit_Cat <- cut(dat_class$Est.Profit, breaks = 
+                              quantile(dat_class$Est.Profit, 
+                                       probs = seq(0, 1, length.out = 4), 
+                                       na.rm = TRUE),
+                            labels = c("Low", "Moderate", "High"),
+                                 include.lowest = TRUE)
+
+dat_class
+```
+
+```{r}
+library(tree)
+
+dat_cl <- cbind(dat_class[,22], dat_class[,2:21])
+names(dat_cl)[1] <- "Profit.Category"
+dat_cl
+
+dat_cl[,1] <- as.factor(dat_cl[,1])
+str(dat_cl)
+
+tree1 <- tree(Profit.Category~.-Average.Meal.Price - Seating.Capacity, data = dat_cl)
+summary(tree1)
+
+plot(tree1)
+text(tree1, pretty=0, cex = 0.8)
+print(tree1)
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+
+# Create the tree using rpart
+rpart_tree <- rpart(Profit.Category ~ . -Average.Meal.Price -Seating.Capacity, data = dat_cl, method = "class")
+
+# Plot the tree
+rpart.plot(rpart_tree, extra = 1)
+```
+
+```{r}
+library(rpart)
+library(rpart.plot)
+
+# Create the tree using rpart
+rpart_tree2 <- rpart(Profit.Category ~ ., data = dat_cl, method = "class")
+
+# Plot the tree
+rpart.plot(rpart_tree2, extra = 1)
+```
+
