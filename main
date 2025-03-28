@@ -1,0 +1,397 @@
+import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from collections import defaultdict
+
+# Try to import community detection packages
+USE_LOUVAIN = False
+try:
+    import community.community_louvain as community_louvain
+    USE_LOUVAIN = True
+except ImportError:
+    print("Note: python-louvain package not found. Using alternative community detection.")
+    print("For better community detection, install python-louvain:")
+    print("pip install python-louvain")
+
+from networkx.algorithms import community
+from networkx.algorithms.link_prediction import jaccard_coefficient
+
+def detect_communities(G):
+    """Detect communities using available methods"""
+    if USE_LOUVAIN:
+        # Use Louvain method if available
+        communities = community_louvain.best_partition(G)
+        modularity = community_louvain.modularity(communities, G)
+    else:
+        # Use Label Propagation as alternative
+        communities_list = list(community.label_propagation_communities(G))
+        # Convert to dict format
+        communities = {}
+        for i, comm in enumerate(communities_list):
+            for node in comm:
+                communities[node] = i
+        # Calculate modularity
+        modularity = community.modularity(G, communities_list)
+    
+    return communities, modularity
+
+def load_ego_network(user_id):
+    """Load all data for a specific ego network"""
+    directory = os.path.dirname(os.path.abspath(__file__))
+    
+    # Load feature names
+    with open(os.path.join(directory, f"{user_id}.featnames")) as f:
+        feat_names = [line.strip() for line in f]
+
+    # Load features
+    feat_df = pd.read_csv(os.path.join(directory, f"{user_id}.feat"), sep=" ", header=None)
+    feat_df.columns = ["node"] + feat_names
+    feat_df.set_index("node", inplace=True)
+
+    # Load ego features
+    ego_feat = pd.read_csv(os.path.join(directory, f"{user_id}.egofeat"), sep=" ", header=None)
+    ego_feat.columns = feat_names
+
+    # Load edges
+    edges_df = pd.read_csv(os.path.join(directory, f"{user_id}.edges"), sep=" ", header=None)
+    edges_df.columns = ["source", "target"]
+
+    # Load circles
+    circles = {}
+    with open(os.path.join(directory, f"{user_id}.circles")) as f:
+        for line in f:
+            parts = line.strip().split()
+            circles[parts[0]] = list(map(int, parts[1:]))
+    
+    return feat_names, feat_df, ego_feat, edges_df, circles
+
+def visualize_network(G, communities, user_id, output_dir):
+    """Visualize network with community structure"""
+    plt.figure(figsize=(12, 8))
+    
+    # Get consistent node ordering
+    nodes = sorted(G.nodes())
+    
+    # Create layout
+    if len(nodes) < 1000:
+        pos = nx.spring_layout(G, k=1/np.sqrt(len(nodes)), iterations=50)
+    else:
+        pos = nx.random_layout(G)
+    
+    # Get community colors in correct order
+    node_colors = [communities[node] for node in nodes]
+    
+    # Draw edges first with alpha
+    edges = list(G.edges())
+    edge_colors = [(0.8, 0.8, 0.8, 0.2) for _ in edges]  # Light gray with alpha
+    nx.draw_networkx_edges(G, pos, edge_color=edge_colors, width=0.5)
+    
+    # Draw nodes
+    nx.draw_networkx_nodes(G, pos,
+                          nodelist=nodes,
+                          node_color=node_colors,
+                          cmap=plt.cm.tab20,
+                          node_size=50,
+                          alpha=0.7)
+    
+    plt.title(f"Community Structure - User {user_id}\n"
+             f"{len(set(communities.values()))} Communities")
+    
+    plt.axis('off')  # Turn off axis
+    plt.savefig(os.path.join(output_dir, f"user_{user_id}_communities.png"), 
+                dpi=300, bbox_inches='tight')
+    plt.close()
+
+def analyze_network(user_id, feat_names, feat_df, ego_feat, edges_df, circles):
+    """Perform comprehensive network analysis"""
+    # Create network graph
+    G = nx.from_pandas_edgelist(edges_df)
+    
+    # 1. Basic network metrics
+    print(f"\nNetwork Analysis for User {user_id}:")
+    n_nodes = G.number_of_nodes()
+    n_edges = G.number_of_edges()
+    avg_clustering = nx.average_clustering(G)
+    density = nx.density(G)
+    
+    print(f"Number of nodes: {n_nodes}")
+    print(f"Number of edges: {n_edges}")
+    print(f"Average clustering coefficient: {avg_clustering:.3f}")
+    print(f"Network density: {density:.3f}")
+    
+    try:
+        diameter = nx.diameter(G)
+        avg_path_length = nx.average_shortest_path_length(G)
+        print(f"Network diameter: {diameter}")
+        print(f"Average shortest path length: {avg_path_length:.3f}")
+    except nx.NetworkXError:
+        print("Network is not connected. Skipping diameter and path length calculations.")
+        diameter = None
+        avg_path_length = None
+    
+    # 2. Centrality Analysis
+    print("\nCentrality Analysis:")
+    degree_cent = nx.degree_centrality(G)
+    between_cent = nx.betweenness_centrality(G)
+    close_cent = nx.closeness_centrality(G)
+    
+    # Print top 5 nodes by different centrality measures
+    print("\nTop 5 nodes by Degree Centrality:")
+    top_degree = sorted(degree_cent.items(), key=lambda x: x[1], reverse=True)[:5]
+    for node, cent in top_degree:
+        print(f"Node {node}: {cent:.3f}")
+    
+    print("\nTop 5 nodes by Betweenness Centrality:")
+    top_between = sorted(between_cent.items(), key=lambda x: x[1], reverse=True)[:5]
+    for node, cent in top_between:
+        print(f"Node {node}: {cent:.3f}")
+    
+    print("\nTop 5 nodes by Closeness Centrality:")
+    top_close = sorted(close_cent.items(), key=lambda x: x[1], reverse=True)[:5]
+    for node, cent in top_close:
+        print(f"Node {node}: {cent:.3f}")
+    
+    # 3. Community Detection
+    print("\nCommunity Detection:")
+    try:
+        communities, modularity = detect_communities(G)
+        n_communities = len(set(communities.values()))
+        print(f"Modularity score: {modularity:.3f}")
+        print(f"Number of detected communities: {n_communities}")
+        print(f"Using method: {'Louvain' if USE_LOUVAIN else 'Label Propagation'}")
+    except Exception as e:
+        print(f"Error in community detection: {str(e)}")
+        communities = {node: 0 for node in G.nodes()}
+        modularity = 0
+        n_communities = 1
+    
+    # 4. Friend Recommendations
+    print("\nTop Friend Recommendations:")
+    try:
+        # Limit the number of node pairs to avoid memory issues
+        max_recommendations = 1000
+        node_list = list(G.nodes())
+        np.random.shuffle(node_list)
+        node_pairs = []
+        for i, u in enumerate(node_list):
+            for v in node_list[i+1:]:
+                if len(node_pairs) >= max_recommendations:
+                    break
+                if not G.has_edge(u, v):
+                    node_pairs.append((u, v))
+            if len(node_pairs) >= max_recommendations:
+                break
+        
+        recommendations = list(jaccard_coefficient(G, node_pairs))
+        top_recommendations = sorted(recommendations, key=lambda x: x[2], reverse=True)[:5]
+        for u, v, score in top_recommendations:
+            print(f"Recommend connection between {u} and {v} (score: {score:.3f})")
+    except Exception as e:
+        print(f"Error in friend recommendations: {str(e)}")
+    
+    # Store metrics
+    metrics = {
+        'nodes': n_nodes,
+        'edges': n_edges,
+        'clustering': avg_clustering,
+        'density': density,
+        'diameter': diameter,
+        'avg_path_length': avg_path_length,
+        'modularity': modularity,
+        'n_communities': n_communities,
+        'avg_degree': np.mean([d for n, d in G.degree()]),
+        'num_circles': len(circles),
+        'avg_circle_size': np.mean([len(members) for members in circles.values()]) if circles else 0
+    }
+    
+    # Visualize network
+    directory = os.path.dirname(os.path.abspath(__file__))
+    visualize_network(G, communities, user_id, directory)
+    
+    # Export for Gephi
+    # Add centrality measures as node attributes
+    nx.set_node_attributes(G, degree_cent, 'degree_centrality')
+    nx.set_node_attributes(G, between_cent, 'betweenness_centrality')
+    nx.set_node_attributes(G, close_cent, 'closeness_centrality')
+    nx.set_node_attributes(G, communities, 'community')
+    
+    nx.write_gexf(G, os.path.join(directory, f"user_{user_id}_network.gexf"))
+    
+    # Export node features and metrics for Gephi
+    node_metrics = pd.DataFrame({
+        'degree_centrality': degree_cent,
+        'betweenness_centrality': between_cent,
+        'closeness_centrality': close_cent,
+        'community': communities
+    })
+    combined_metrics = pd.concat([feat_df, node_metrics], axis=1)
+    combined_metrics.to_csv(os.path.join(directory, f"user_{user_id}_features.csv"))
+    
+    return G, metrics, communities
+
+def plot_comparative_results(all_metrics):
+    """Create comparative visualizations of network metrics"""
+    directory = os.path.dirname(os.path.abspath(__file__))
+    df = pd.DataFrame(all_metrics).T
+    
+    # Set figure style to a built-in style
+    plt.style.use('bmh')  # Using 'bmh' style which is similar to seaborn
+    
+    # Create subplots with better spacing
+    fig = plt.figure(figsize=(20, 15))
+    fig.subplots_adjust(hspace=0.4, wspace=0.3)
+    
+    # Set color palette
+    colors = {'nodes': '#2ecc71', 'edges': '#e74c3c'}
+    scatter_color = '#3498db'
+    
+    # 1. Network Size and Structure
+    ax1 = plt.subplot(3, 2, 1)
+    x = range(len(df))
+    width = 0.35
+    ax1.bar([i - width/2 for i in x], df['nodes'], width, label='Nodes', color=colors['nodes'], alpha=0.7)
+    ax1.bar([i + width/2 for i in x], df['edges'], width, label='Edges', color=colors['edges'], alpha=0.7)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(df.index, rotation=45)
+    ax1.set_title('Network Size by User', pad=15, fontsize=12)
+    ax1.legend(fontsize=10)
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. Clustering and Density
+    ax2 = plt.subplot(3, 2, 2)
+    ax2.plot(df.index, df['clustering'], 'o-', label='Clustering Coefficient', 
+            color=colors['nodes'], linewidth=2, markersize=8)
+    ax2.plot(df.index, df['density'], 's-', label='Density', 
+            color=colors['edges'], linewidth=2, markersize=8)
+    ax2.set_xticklabels(df.index, rotation=45)
+    ax2.set_title('Network Properties', pad=15, fontsize=12)
+    ax2.legend(fontsize=10)
+    ax2.grid(True, alpha=0.3)
+    
+    # 3. Community Structure
+    ax3 = plt.subplot(3, 2, 3)
+    scatter = ax3.scatter(df['n_communities'], df['modularity'], 
+                         c=df['nodes'], cmap='viridis', 
+                         s=100, alpha=0.7)
+    plt.colorbar(scatter, label='Number of Nodes')
+    for i, user in enumerate(df.index):
+        ax3.annotate(user, (df['n_communities'][i], df['modularity'][i]),
+                    xytext=(5, 5), textcoords='offset points', fontsize=8)
+    ax3.set_xlabel('Number of Communities', fontsize=10)
+    ax3.set_ylabel('Modularity Score', fontsize=10)
+    ax3.set_title('Community Structure', pad=15, fontsize=12)
+    ax3.grid(True, alpha=0.3)
+    
+    # 4. Path Length Analysis
+    ax4 = plt.subplot(3, 2, 4)
+    valid_networks = df[df['diameter'].notna()]
+    scatter = ax4.scatter(valid_networks['diameter'], 
+                         valid_networks['avg_path_length'],
+                         c=valid_networks['nodes'],
+                         cmap='viridis',
+                         s=100, alpha=0.7)
+    plt.colorbar(scatter, label='Number of Nodes')
+    for i, user in enumerate(valid_networks.index):
+        ax4.annotate(user, 
+                    (valid_networks['diameter'][i], valid_networks['avg_path_length'][i]),
+                    xytext=(5, 5), textcoords='offset points', fontsize=8)
+    ax4.set_xlabel('Network Diameter', fontsize=10)
+    ax4.set_ylabel('Average Path Length', fontsize=10)
+    ax4.set_title('Path Length Analysis', pad=15, fontsize=12)
+    ax4.grid(True, alpha=0.3)
+    
+    # 5. Circle Analysis
+    ax5 = plt.subplot(3, 2, 5)
+    scatter = ax5.scatter(df['num_circles'], df['avg_circle_size'],
+                         c=df['nodes'], cmap='viridis',
+                         s=100, alpha=0.7)
+    plt.colorbar(scatter, label='Number of Nodes')
+    for i, user in enumerate(df.index):
+        ax5.annotate(user, (df['num_circles'][i], df['avg_circle_size'][i]),
+                    xytext=(5, 5), textcoords='offset points', fontsize=8)
+    ax5.set_xlabel('Number of Circles', fontsize=10)
+    ax5.set_ylabel('Average Circle Size', fontsize=10)
+    ax5.set_title('Circle Properties', pad=15, fontsize=12)
+    ax5.grid(True, alpha=0.3)
+    
+    # Add a title to the entire figure
+    fig.suptitle('Network Analysis Comparison Across Users', 
+                fontsize=16, y=0.95)
+    
+    # Adjust layout and save
+    plt.savefig(os.path.join(directory, 'network_comparison.png'), 
+                dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Correlation heatmap with improved styling
+    plt.figure(figsize=(12, 10))
+    
+    # Create custom colormap
+    cmap = plt.cm.RdYlBu_r
+    
+    # Create heatmap
+    corr_matrix = df.corr()
+    mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
+    
+    # Plot heatmap
+    im = plt.imshow(corr_matrix, cmap=cmap, aspect='equal')
+    plt.colorbar(im, label='Correlation Coefficient')
+    
+    # Add correlation values
+    for i in range(len(corr_matrix)):
+        for j in range(len(corr_matrix)):
+            if not mask[i, j]:
+                color = 'white' if abs(corr_matrix.iloc[i, j]) > 0.5 else 'black'
+                plt.text(j, i, f'{corr_matrix.iloc[i, j]:.2f}', 
+                        ha='center', va='center', color=color,
+                        fontsize=8)
+    
+    # Customize labels and title
+    plt.xticks(range(len(corr_matrix)), corr_matrix.columns, 
+               rotation=45, ha='right', fontsize=10)
+    plt.yticks(range(len(corr_matrix)), corr_matrix.columns, 
+               fontsize=10)
+    plt.title('Correlation between Network Metrics', 
+             pad=15, fontsize=14)
+    
+    # Save plot
+    plt.tight_layout()
+    plt.savefig(os.path.join(directory, 'metric_correlations.png'), 
+                dpi=300, bbox_inches='tight')
+    plt.close()
+
+def main():
+    ego_networks = ['0', '107', '348', '414', '686', '698', '1684', '1912', '3437', '3980']
+    all_metrics = {}
+    
+    for user_id in ego_networks:
+        print(f"\n{'='*50}")
+        print(f"Analyzing ego network for user {user_id}")
+        print(f"{'='*50}")
+        
+        try:
+            # Load data
+            feat_names, feat_df, ego_feat, edges_df, circles = load_ego_network(user_id)
+            
+            # Analyze network
+            G, metrics, communities = analyze_network(user_id, feat_names, feat_df, ego_feat, edges_df, circles)
+            all_metrics[user_id] = metrics
+            
+        except FileNotFoundError as e:
+            print(f"Could not process user {user_id}: {str(e)}")
+            continue
+    
+    # Create comparative visualizations
+    if all_metrics:
+        plot_comparative_results(all_metrics)
+        print("\nAnalysis complete! Files generated:")
+        print("1. Individual network visualizations (user_X_communities.png)")
+        print("2. Network comparison visualization (network_comparison.png)")
+        print("3. Metric correlations (metric_correlations.png)")
+        print("4. Gephi files (user_X_network.gexf and user_X_features.csv)")
+
+if __name__ == "__main__":
+    main()
+
